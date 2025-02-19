@@ -1,8 +1,11 @@
 // File: adapters/fetchers/jshttp/jshttp.go
+
 package jshttp
 
 import (
 	"context"
+	"log"
+	"strings"
 
 	"github.com/EmreKaplaner/scrapemate"
 	"github.com/playwright-community/playwright-go"
@@ -13,21 +16,35 @@ var _ scrapemate.HTTPFetcher = (*jsFetch)(nil)
 
 // JSFetcherOptions is the input config for the JS fetcher
 type JSFetcherOptions struct {
-	Headless          bool
-	DisableImages     bool
-	Rotator           scrapemate.ProxyRotator
-	PoolSize          int
-	PageReuseLimit    int
+	// Headless indicates whether the browser should run without a visible UI
+	Headless bool
+
+	// DisableImages indicates whether to disable loading images for performance
+	DisableImages bool
+
+	// Rotator provides a mechanism to rotate proxies for each new browser
+	Rotator scrapemate.ProxyRotator
+
+	// PoolSize is how many browser instances to launch in parallel
+	PoolSize int
+
+	// PageReuseLimit is how many times the same page is reused before closing
+	PageReuseLimit int
+
+	// BrowserReuseLimit is how many times the same browser is reused before closing
 	BrowserReuseLimit int
-	UserAgent         string
+
+	// UserAgent if set, overrides the default browser UA string
+	UserAgent string
 }
 
 // New creates a JS-based fetcher using Playwright as the engine
 func New(params JSFetcherOptions) (scrapemate.HTTPFetcher, error) {
+	// You can optionally specify a custom RunOptions or channel:
 	opts := []*playwright.RunOptions{
 		{
 			Browsers: []string{"chromium"},
-			Verbose:  true,
+			Verbose:  true, // We'll keep verbose logging for diagnosing issues
 		},
 	}
 
@@ -41,6 +58,7 @@ func New(params JSFetcherOptions) (scrapemate.HTTPFetcher, error) {
 		return nil, err
 	}
 
+	// Construct the main jsFetch instance
 	ans := jsFetch{
 		pw:                pw,
 		headless:          params.Headless,
@@ -83,14 +101,15 @@ type jsFetch struct {
 	ua                string
 }
 
-// GetBrowser tries to take a browser from the pool, or creates a new one if needed
+// GetBrowser retrieves or creates a browser from the pool
 func (o *jsFetch) GetBrowser(ctx context.Context) (*browser, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case ans := <-o.pool:
 		// If browser is connected and under usage limit, reuse it
-		if ans.browser.IsConnected() && (o.browserReuseLimit <= 0 || ans.browserUsage < o.browserReuseLimit) {
+		if ans.browser.IsConnected() &&
+			(o.browserReuseLimit <= 0 || ans.browserUsage < o.browserReuseLimit) {
 			return ans, nil
 		}
 		// Otherwise close and create a new one
@@ -129,7 +148,7 @@ func (o *jsFetch) PutBrowser(ctx context.Context, b *browser) {
 	}
 }
 
-// Fetch fetches the given job (URL) in a Playwright browser/page and returns the Response
+// Fetch fetches the given job (URL) in a Playwright browser/page
 func (o *jsFetch) Fetch(ctx context.Context, job scrapemate.IJob) scrapemate.Response {
 	browser, err := o.GetBrowser(ctx)
 	if err != nil {
@@ -195,8 +214,7 @@ func (o *browser) Close() {
 	_ = o.browser.Close()
 }
 
-// newBrowser creates a brand-new Browser with the proxy at launch time,
-// then creates a single BrowserContext (no proxy at the context level).
+// newBrowser creates a brand-new Browser with the proxy at launch time
 func newBrowser(
 	pw *playwright.Playwright,
 	headless, disableImages bool,
@@ -206,47 +224,49 @@ func newBrowser(
 
 	// If we have a rotator, pick the next proxy for this launch
 	var launchProxy *playwright.Proxy
+	var argProxyServer string
 	if rotator != nil {
 		next := rotator.Next()
 		launchProxy = &playwright.Proxy{
-			Server:   next.URL, // e.g. "http://username:password@proxyhost:port"
+			Server:   next.URL, // e.g. "http://user:pass@host:port"
 			Username: playwright.String(next.Username),
 			Password: playwright.String(next.Password),
 		}
+
+		// Fallback approach: also pass --proxy-server in command-line arg
+		// in case the built-in Proxy field fails
+		// If next.URL includes user:pass, might need to parse/clean it.
+		if strings.HasPrefix(next.URL, "http") {
+			argProxyServer = "--proxy-server=" + next.URL
+		}
 	}
 
-	// Launch the Chromium browser with the proxy at the LAUNCH level
+	// Build launch options
+	args := []string{
+		"--start-maximized",
+		// Minimal flags—remove advanced ones that might break proxy handshake
+		// or re-add them one by one as needed.
+	}
+
+	if argProxyServer != "" {
+		args = append(args, argProxyServer)
+		log.Printf("[DEBUG] Using fallback CLI proxy arg: %s", argProxyServer)
+	}
+
+	if disableImages {
+		args = append(args, "--blink-settings=imagesEnabled=false")
+	}
+
+	// Headful or headless
 	opts := playwright.BrowserTypeLaunchOptions{
 		Headless: playwright.Bool(headless),
-		Proxy:    launchProxy, // <-- Instead of BrowserTypeLaunchOptionsProxy
-		Args: []string{
-			"--start-maximized",
-			"--no-default-browser-check",
-			"--disable-dev-shm-usage",
-			"--no-sandbox",
-			"--disable-setuid-sandbox",
-			"--no-zygote",
-			"--disable-gpu",
-			"--mute-audio",
-			"--disable-extensions",
-			"--single-process",
-			"--disable-breakpad",
-			"--disable-features=TranslateUI,BlinkGenPropertyTrees",
-			"--disable-ipc-flooding-protection",
-			"--enable-features=NetworkService,NetworkServiceInProcess",
-			"--enable-features=NetworkService",
-			"--disable-default-apps",
-			"--disable-notifications",
-			"--disable-webgl",
-			"--disable-blink-features=AutomationControlled",
-			"--ignore-certificate-errors",
-			"--ignore-certificate-errors-spki-list",
-			"--disable-web-security",
-		},
+		Proxy:    launchProxy,
+		Args:     args,
 	}
-	if disableImages {
-		opts.Args = append(opts.Args, "--blink-settings=imagesEnabled=false")
-	}
+
+	log.Printf("[DEBUG] Launching browser: headless=%t, proxy=%v, args=%v",
+		headless, launchProxy, args,
+	)
 
 	br, err := pw.Chromium.Launch(opts)
 	if err != nil {
@@ -254,8 +274,7 @@ func newBrowser(
 	}
 
 	// Create a BrowserContext WITHOUT specifying a proxy
-	const defaultWidth, defaultHeight = 1920, 1080
-
+	// (Playwright should use the proxy from the Browser-level config)
 	bctxOpts := playwright.BrowserNewContextOptions{
 		UserAgent: func() *string {
 			if ua == "" {
@@ -266,14 +285,14 @@ func newBrowser(
 			}
 			return &ua
 		}(),
+		// Example: headful mode can have a big window
 		Viewport: &playwright.Size{
-			Width:  defaultWidth,
-			Height: defaultHeight,
+			Width:  1280,
+			Height: 800,
 		},
-		// No Proxy set at context level
 	}
 
-	bctx, err := br.NewContext(bctxOpts)
+	ctx, err := br.NewContext(bctxOpts)
 	if err != nil {
 		_ = br.Close()
 		return nil, err
@@ -281,6 +300,6 @@ func newBrowser(
 
 	return &browser{
 		browser: br,
-		ctx:     bctx,
+		ctx:     ctx,
 	}, nil
 }
