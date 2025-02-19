@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/gosom/scrapemate"
+	"github.com/EmreKaplaner/scrapemate"
 	"github.com/syndtr/goleveldb/leveldb"
 )
 

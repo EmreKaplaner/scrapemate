@@ -4,8 +4,8 @@ import (
 	"errors"
 	"time"
 
+	"github.com/EmreKaplaner/scrapemate"
 	"github.com/go-playground/validator/v10"
-	"github.com/gosom/scrapemate"
 )
 
 // NewConfig creates a new config with default values.

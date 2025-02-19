@@ -7,7 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/gosom/scrapemate"
+	"github.com/EmreKaplaner/scrapemate"
 )
 
 type Rotator struct {

@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/gosom/scrapemate"
+	"github.com/EmreKaplaner/scrapemate"
 
 	"github.com/Noooste/azuretls-client"
 )

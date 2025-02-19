@@ -3,7 +3,7 @@ package scrapemate_test
 import (
 	"testing"
 
-	"github.com/gosom/scrapemate"
+	"github.com/EmreKaplaner/scrapemate"
 	"github.com/stretchr/testify/require"
 )
 

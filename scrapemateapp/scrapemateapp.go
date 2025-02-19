@@ -7,17 +7,17 @@ import (
 	"net/http/cookiejar"
 	"time"
 
-	"github.com/gosom/scrapemate"
+	"github.com/EmreKaplaner/scrapemate"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/gosom/scrapemate/adapters/cache/filecache"
-	"github.com/gosom/scrapemate/adapters/cache/leveldbcache"
-	jsfetcher "github.com/gosom/scrapemate/adapters/fetchers/jshttp"
-	fetcher "github.com/gosom/scrapemate/adapters/fetchers/nethttp"
-	"github.com/gosom/scrapemate/adapters/fetchers/stealth"
-	parser "github.com/gosom/scrapemate/adapters/parsers/goqueryparser"
-	memprovider "github.com/gosom/scrapemate/adapters/providers/memory"
-	"github.com/gosom/scrapemate/adapters/proxy"
+	"github.com/EmreKaplaner/scrapemate/adapters/cache/filecache"
+	"github.com/EmreKaplaner/scrapemate/adapters/cache/leveldbcache"
+	jsfetcher "github.com/EmreKaplaner/scrapemate/adapters/fetchers/jshttp"
+	fetcher "github.com/EmreKaplaner/scrapemate/adapters/fetchers/nethttp"
+	"github.com/EmreKaplaner/scrapemate/adapters/fetchers/stealth"
+	parser "github.com/EmreKaplaner/scrapemate/adapters/parsers/goqueryparser"
+	memprovider "github.com/EmreKaplaner/scrapemate/adapters/providers/memory"
+	"github.com/EmreKaplaner/scrapemate/adapters/proxy"
 )
 
 type ScrapemateApp struct {

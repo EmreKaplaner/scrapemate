@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"sync"
 
-	"github.com/gosom/scrapemate"
+	"github.com/EmreKaplaner/scrapemate"
 )
 
 var _ scrapemate.ResultWriter = (*csvWriter)(nil)
