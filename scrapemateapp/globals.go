@@ -4,6 +4,8 @@ import (
 	"sync"
 
 	"github.com/go-playground/validator/v10"
+
+	"github.com/EmreKaplaner/scrapemate"
 )
 
 const (
@@ -15,3 +17,7 @@ var (
 	validate *validator.Validate
 	once     sync.Once
 )
+
+type ScrapeMateApp struct {
+	s *scrapemate.ScrapeMate
+}

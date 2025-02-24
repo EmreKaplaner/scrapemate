@@ -180,7 +180,7 @@ func WithInitJob(job IJob) func(*ScrapeMate) error {
 	}
 }
 
-// Scrapemate contains unexporter fields
+// ScrapeMate contains unexporter fields
 type ScrapeMate struct {
 	log         logging.Logger
 	ctx         context.Context
@@ -198,6 +198,27 @@ type ScrapeMate struct {
 	exitOnInactivity         bool
 	exitOnInactivityDuration time.Duration
 	timeoutPerJob            time.Duration
+
+	// Fields for stealth mode
+	minDelay           time.Duration
+	maxDelay           time.Duration
+	useRandomUserAgent bool
+
+	// The default headers used by the fetcher
+	defaultHeaders map[string]string
+
+	// Retry configuration
+	retryConfig RetryConfig
+
+	// Keep track of the userAgent string we're using
+	userAgent string
+}
+
+// Logger is a stand-in interface for your logging
+type Logger interface {
+	Infof(format string, v ...any)
+	Errorf(format string, v ...any)
+	Debugf(format string, v ...any)
 }
 
 // Start starts the scraper
@@ -626,4 +647,19 @@ func (o *stats) incJobsFailed() {
 
 	o.numOfJobsFailed++
 	o.lastActivityAt = time.Now().UTC()
+}
+
+func tlsSignatureFromUserAgent(agent string) (HTTPFetcher, error) {
+	// Return a stub fetcher that does nothing
+	return &stubFetcher{}, nil
+}
+
+type stubFetcher struct{}
+
+func (s *stubFetcher) Fetch(ctx context.Context, job IJob) Response {
+	return Response{StatusCode: 200}
+}
+
+func (s *stubFetcher) Close() error {
+	return nil
 }

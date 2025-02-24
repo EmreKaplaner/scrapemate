@@ -5,9 +5,11 @@ package jshttp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/EmreKaplaner/scrapemate"
 	"github.com/playwright-community/playwright-go"
@@ -275,13 +277,13 @@ func newBrowser(
 
 	// Headful or headless
 	opts := playwright.BrowserTypeLaunchOptions{
-		Headless: playwright.Bool(false),
+		Headless: playwright.Bool(headless),
 		Proxy:    launchProxy,
 		Args:     args,
 	}
 
 	log.Printf("[DEBUG] Launching browser: headless=%t, proxy=%v, args=%v",
-		false, launchProxy, args,
+		headless, launchProxy, args,
 	)
 
 	br, err := pw.Chromium.Launch(opts)
@@ -318,4 +320,78 @@ func newBrowser(
 		browser: br,
 		ctx:     ctx,
 	}, nil
+}
+
+// JSHTTPFetcher simulates or actually uses a JS-capable engine (like Playwright, Rod, etc.)
+type JSHTTPFetcher struct {
+	mu          sync.Mutex
+	headless    bool
+	initialized bool
+	browser     interface{}            // represent your actual browser/driver
+	settings    map[string]interface{} // any custom settings
+}
+
+// NewJSHTTPFetcher creates a new JSHTTPFetcher with optional settings.
+func NewJSHTTPFetcher(headless bool) *JSHTTPFetcher {
+	return &JSHTTPFetcher{
+		headless: headless,
+		settings: make(map[string]interface{}),
+	}
+}
+
+// Fetch attempts to fetch using a JavaScript-capable environment.
+func (j *JSHTTPFetcher) Fetch(ctx context.Context, job scrapemate.IJob) scrapemate.Response {
+
+	// Lazy initialization
+	j.mu.Lock()
+	if !j.initialized {
+		if err := j.initBrowser(); err != nil {
+			j.mu.Unlock()
+			return scrapemate.Response{Error: fmt.Errorf("failed to init browser: %w", err)}
+		}
+		j.initialized = true
+	}
+	j.mu.Unlock()
+
+	// A real implementation would do something like:
+	// 1. Open a new page
+	// 2. Set up stealth options if needed
+	// 3. Navigate to job.GetFullURL()
+	// 4. Wait for the page to load
+	// 5. Optionally evaluate JS: parse DOM, etc.
+
+	// Minimal example returning a "fake" response
+	resp := scrapemate.Response{
+		StatusCode: 200,
+		URL:        job.GetFullURL(),
+		Headers:    http.Header{},
+		Body:       []byte("<html><body>Hello from JSHTTP!</body></html>"),
+	}
+	return resp
+}
+
+// initBrowser simulates the creation/launching of a JS engine
+func (j *JSHTTPFetcher) initBrowser() error {
+	if j.browser != nil {
+		return nil
+	}
+	// We pretend to launch a headless Chrome or other engine
+	// ...
+	j.browser = struct{}{} // placeholder
+	return nil
+}
+
+// Close cleans up resources
+func (j *JSHTTPFetcher) Close() error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	if j.browser == nil {
+		return errors.New("browser not initialized")
+	}
+	// Now close the browser or environment
+	j.browser = nil
+	j.initialized = false
+
+	return nil
 }

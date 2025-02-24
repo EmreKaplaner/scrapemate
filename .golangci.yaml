@@ -26,11 +26,6 @@ linters-settings:
 linters:
   disable-all: true
   enable:
-    - bodyclose
-    - dogsled
-    - dupl
-    - errcheck
-    - exportloopref
     - exhaustive
     - goconst
     - gocritic

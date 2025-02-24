@@ -34,7 +34,6 @@ func (o *httpFetch) Close() error {
 func (o *httpFetch) Fetch(ctx context.Context, job scrapemate.IJob) scrapemate.Response {
 	u := job.GetFullURL()
 	reqBody := getBuffer()
-
 	defer putBuffer(reqBody)
 
 	if len(job.GetBody()) > 0 {
@@ -58,7 +57,6 @@ func (o *httpFetch) Fetch(ctx context.Context, job scrapemate.IJob) scrapemate.R
 		ans.Error = err
 		return ans
 	}
-
 	defer func() {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
@@ -72,7 +70,6 @@ func (o *httpFetch) Fetch(ctx context.Context, job scrapemate.IJob) scrapemate.R
 	}
 
 	var reader io.ReadCloser
-
 	switch resp.Header.Get("Content-Encoding") {
 	case "gzip":
 		reader, err = gzip.NewReader(resp.Body)
@@ -98,10 +95,8 @@ var bufferPool = sync.Pool{
 }
 
 func getBuffer() *bytes.Buffer {
-	//nolint:errcheck // we don't care about errors here
 	b := bufferPool.Get().(*bytes.Buffer)
 	b.Reset()
-
 	return b
 }
 

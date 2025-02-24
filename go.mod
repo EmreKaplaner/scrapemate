@@ -5,20 +5,21 @@ go 1.23
 toolchain go1.23.1
 
 require (
-	github.com/Noooste/azuretls-client v1.6.2
+	github.com/Noooste/azuretls-client v1.6.4
 	github.com/PuerkitoBio/goquery v1.10.1
 	github.com/go-playground/validator/v10 v10.24.0
 	github.com/gosom/kit v0.0.0-20230309082109-543b32ac686a
 	github.com/playwright-community/playwright-go v0.4902.0
-	github.com/stretchr/testify v1.9.0
+	github.com/stretchr/testify v1.10.0
 	github.com/syndtr/goleveldb v1.0.0
 	go.uber.org/mock v0.5.0
+	golang.org/x/net v0.35.0
 	golang.org/x/sync v0.11.0
 )
 
 require (
 	github.com/Noooste/fhttp v1.0.12 // indirect
-	github.com/Noooste/utls v1.3.1 // indirect
+	github.com/Noooste/utls v1.3.6 // indirect
 	github.com/Noooste/websocket v1.0.3 // indirect
 	github.com/andybalholm/brotli v1.1.1 // indirect
 	github.com/andybalholm/cascadia v1.3.3 // indirect
@@ -40,7 +41,6 @@ require (
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/rs/zerolog v1.33.0 // indirect
 	golang.org/x/crypto v0.33.0 // indirect
-	golang.org/x/net v0.34.0 // indirect
 	golang.org/x/sys v0.30.0 // indirect
 	golang.org/x/text v0.22.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect

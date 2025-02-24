@@ -21,7 +21,6 @@ func NewLevelDBCache(path string) (*LevelDBCache, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	return &LevelDBCache{db: db}, nil
 }
 
@@ -31,12 +30,10 @@ func (c *LevelDBCache) Get(_ context.Context, key string) (scrapemate.Response, 
 	if err != nil {
 		return scrapemate.Response{}, err
 	}
-
 	var response scrapemate.Response
 	if err := json.Unmarshal(data, &response); err != nil {
 		return scrapemate.Response{}, err
 	}
-
 	return response, nil
 }
 
@@ -46,7 +43,6 @@ func (c *LevelDBCache) Set(_ context.Context, key string, value *scrapemate.Resp
 	if err != nil {
 		return err
 	}
-
 	return c.db.Put([]byte(key), data, nil)
 }
 

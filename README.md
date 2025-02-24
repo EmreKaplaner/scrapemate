@@ -120,8 +120,6 @@ func (c Country) CsvRow() []string {
 }
 
 ```
-
-```
 go mod tidy
 go run main.go 1>countries.csv
 ```
@@ -149,5 +147,5 @@ Contributions are welcome.
 
 ## Licence
 
-Scrapemate is licensed under the MIT License. See LICENCE file
+Scrapemate is licensed under the MIT License. See LICENSE file
 
