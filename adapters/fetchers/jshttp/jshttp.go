@@ -4,7 +4,9 @@ package jshttp
 
 import (
 	"context"
+	"errors"
 	"log"
+	"net/http"
 	"strings"
 
 	"github.com/EmreKaplaner/scrapemate"
@@ -197,7 +199,19 @@ func (o *jsFetch) Fetch(ctx context.Context, job scrapemate.IJob) scrapemate.Res
 	}()
 
 	// Actually navigate/process via the job's BrowserActions
-	return job.BrowserActions(ctx, page)
+	resp := job.BrowserActions(ctx, page)
+
+	if resp.Error != nil {
+		return resp
+	}
+
+	if resp.StatusCode == http.StatusForbidden {
+		// Handle captcha or forbidden access
+		log.Println("Access forbidden, possible captcha or block.")
+		return scrapemate.Response{Error: errors.New("access forbidden")}
+	}
+
+	return resp
 }
 
 // browser is a wrapper around one Playwright Browser + BrowserContext
@@ -239,6 +253,8 @@ func newBrowser(
 		if strings.HasPrefix(next.URL, "http") {
 			argProxyServer = "--proxy-server=" + next.URL
 		}
+
+		log.Printf("Launching browser with proxy: %s, user: %s", next.URL, next.Username)
 	}
 
 	// Build launch options
@@ -259,13 +275,13 @@ func newBrowser(
 
 	// Headful or headless
 	opts := playwright.BrowserTypeLaunchOptions{
-		Headless: playwright.Bool(headless),
+		Headless: playwright.Bool(false),
 		Proxy:    launchProxy,
 		Args:     args,
 	}
 
 	log.Printf("[DEBUG] Launching browser: headless=%t, proxy=%v, args=%v",
-		headless, launchProxy, args,
+		false, launchProxy, args,
 	)
 
 	br, err := pw.Chromium.Launch(opts)

@@ -51,6 +51,8 @@ func New(options ...func(*ScrapeMate) error) (*ScrapeMate, error) {
 		s.concurrency = 1
 	}
 
+	s.timeoutPerJob = 60 * time.Second // Set default timeout
+
 	return s, nil
 }
 
@@ -195,6 +197,7 @@ type ScrapeMate struct {
 	stats                    stats
 	exitOnInactivity         bool
 	exitOnInactivityDuration time.Duration
+	timeoutPerJob            time.Duration
 }
 
 // Start starts the scraper
