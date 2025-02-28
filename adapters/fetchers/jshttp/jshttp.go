@@ -29,21 +29,38 @@ type JSFetcherOptions struct {
 	UserAgent         string
 }
 
-// New creates a JS-based fetcher using Playwright as the engine
-func New(params JSFetcherOptions) (scrapemate.HTTPFetcher, error) {
-	// Install the required browsers, if needed
-	opts := []*playwright.RunOptions{
-		{
-			Browsers: []string{"chromium"},
-			Verbose:  true, // Keep verbose logging for diagnosing issues
-		},
-	}
-	if err := playwright.Install(opts...); err != nil {
-		return nil, err
-	}
+// Global variables for shared Playwright initialization.
+var (
+	pwInitOnce  sync.Once
+	globalPW    *playwright.Playwright
+	globalPWErr error
+)
 
-	// Launch the Playwright driver
-	pw, err := playwright.Run()
+// getGlobalPlaywright initializes and returns the global Playwright instance once.
+func getGlobalPlaywright() (*playwright.Playwright, error) {
+	pwInitOnce.Do(func() {
+		// Perform the install ONCE
+		if err := playwright.Install(); err != nil {
+			globalPWErr = fmt.Errorf("failed to install playwright: %w", err)
+			return
+		}
+
+		// Launch Playwright ONCE
+		pw, err := playwright.Run()
+		if err != nil {
+			globalPWErr = fmt.Errorf("failed to run playwright: %w", err)
+			return
+		}
+		globalPW = pw
+	})
+
+	return globalPW, globalPWErr
+}
+
+// New creates a JS-based fetcher using a globally shared Playwright instance.
+// It doesn't repeatedly install or launch Playwright—those happen exactly once.
+func New(params JSFetcherOptions) (scrapemate.HTTPFetcher, error) {
+	pw, err := getGlobalPlaywright()
 	if err != nil {
 		return nil, err
 	}
@@ -91,45 +108,41 @@ type jsFetch struct {
 	ua                string
 }
 
-// GetBrowser retrieves or creates a browser from the pool
+// GetBrowser retrieves or creates a browser from the pool.
+// If a browser from the pool exceeds usage limits or is disconnected,
+// it closes that one and spawns a fresh browser.
 func (o *jsFetch) GetBrowser(ctx context.Context) (*browser, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 
-	case ans := <-o.pool:
-		// If the browser is still connected and under usage limit, reuse it
-		if ans.browser.IsConnected() &&
-			(o.browserReuseLimit <= 0 || ans.browserUsage < o.browserReuseLimit) {
-			return ans, nil
+	case br := <-o.pool:
+		if br.browser.IsConnected() &&
+			(o.browserReuseLimit <= 0 || br.browserUsage < o.browserReuseLimit) {
+			return br, nil
 		}
 		// Otherwise, close and create a fresh browser
-		ans.Close()
+		br.Close()
 
 	default:
 	}
-	// No browsers available, or usage limit exceeded => create a new one
-	return newBrowser(
-		o.pw,
-		o.headless,
-		o.disableImages,
-		o.rotator,
-		o.ua,
-	)
+	// No browsers in pool or usage limit exceeded => create a new one
+	return newBrowser(o.pw, o.headless, o.disableImages, o.rotator, o.ua)
 }
 
-// Close implements the scrapemate.HTTPFetcher interface
+// Close implements the scrapemate.HTTPFetcher interface.
+// It closes all browsers in the pool but does not stop the global Playwright instance.
 func (o *jsFetch) Close() error {
-	// Close out the pool, then close each browser context
 	close(o.pool)
 	for b := range o.pool {
 		b.Close()
 	}
-	// Finally stop Playwright
-	return o.pw.Stop()
+	// Note: We do NOT stop the global Playwright instance here,
+	// because it's meant to be used globally and typically closed at app shutdown.
+	return nil
 }
 
-// PutBrowser returns a browser to the pool (or closes it if the pool is full or context canceled)
+// PutBrowser returns a browser to the pool (or closes it if the pool is full or the context is done).
 func (o *jsFetch) PutBrowser(ctx context.Context, b *browser) {
 	if !b.browser.IsConnected() {
 		b.Close()
@@ -140,65 +153,64 @@ func (o *jsFetch) PutBrowser(ctx context.Context, b *browser) {
 		b.Close()
 	case o.pool <- b:
 	default:
+		// If the pool is full, close this browser
 		b.Close()
 	}
 }
 
-// Fetch fetches the given job (URL) in a Playwright browser/page
+// Fetch acquires a browser context from the pool, does the job's BrowserActions, then returns the result.
 func (o *jsFetch) Fetch(ctx context.Context, job scrapemate.IJob) scrapemate.Response {
-	// Acquire a browser context from the pool
-	browser, err := o.GetBrowser(ctx)
+	br, err := o.GetBrowser(ctx)
 	if err != nil {
 		return scrapemate.Response{Error: err}
 	}
-	defer o.PutBrowser(ctx, browser)
+	defer o.PutBrowser(ctx, br)
 
-	// Honor job's timeout if provided
+	// If the job has a timeout, apply it
 	if job.GetTimeout() > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, job.GetTimeout())
 		defer cancel()
 	}
 
-	// Reuse the existing page if available, otherwise create a new one
-	pages := browser.ctx.Pages()
+	// Reuse the existing page if available; else create one
+	pages := br.ctx.Pages()
 	var page playwright.Page
 	if len(pages) > 0 {
 		page = pages[0]
-		// Close any extra pages to avoid confusion
+		// Close extra pages
 		for i := 1; i < len(pages); i++ {
 			_ = pages[i].Close()
 		}
 	} else {
-		page, err = browser.ctx.NewPage()
+		page, err = br.ctx.NewPage()
 		if err != nil {
 			return scrapemate.Response{Error: err}
 		}
 	}
 
-	// Match page timeout to job
+	// If job has a page-level timeout
 	if job.GetTimeout() > 0 {
 		page.SetDefaultTimeout(float64(job.GetTimeout().Milliseconds()))
 	}
 
-	// Increase usage counters
-	browser.page0Usage++
-	browser.browserUsage++
+	// Track usage
+	br.page0Usage++
+	br.browserUsage++
 
-	// If we've exceeded the page reuse limit, close the page after use
+	// If we've exceeded page reuse limit, close after use
 	defer func() {
-		if o.pageReuseLimit > 0 && browser.page0Usage >= o.pageReuseLimit {
+		if o.pageReuseLimit > 0 && br.page0Usage >= o.pageReuseLimit {
 			_ = page.Close()
-			browser.page0Usage = 0
+			br.page0Usage = 0
 		}
 	}()
 
-	// 1) Actually let the job do its browser actions: navigation, scraping, etc.
+	// 1) Let the job run its browser actions
 	resp := job.BrowserActions(ctx, page)
 
-	// 2) If there's an error from the job's actions, return immediately
+	// 2) If there's an immediate error, handle it
 	if resp.Error != nil {
-		// If it's a typical navigation/timeout error, log it
 		if strings.Contains(resp.Error.Error(), "Timeout") ||
 			strings.Contains(resp.Error.Error(), "Navigation") {
 			log.Printf("Navigation error during job.BrowserActions: %v", resp.Error)
@@ -206,42 +218,41 @@ func (o *jsFetch) Fetch(ctx context.Context, job scrapemate.IJob) scrapemate.Res
 		return resp
 	}
 
-	// 3) Final content read to detect CAPTCHAs or readiness
+	// 3) Optionally read final content
 	content, contentErr := page.Content()
 	if contentErr != nil {
 		return scrapemate.Response{Error: contentErr}
 	}
 
-	// 4) Detect CAPTCHAs in final HTML
+	// 4) Look for CAPTCHAs in the final HTML
 	if detectCaptcha(content) {
 		log.Println("CAPTCHA detected (no MarkBad call, just logging).")
 		return scrapemate.Response{Error: errors.New("captcha detected")}
 	}
 
-	// 5) Check if page is fully loaded
+	// 5) Check if document is fully loaded
 	readyState, _ := page.Evaluate(`() => document.readyState`)
 	if readyState != "complete" {
 		return scrapemate.Response{Error: errors.New("page not fully loaded")}
 	}
 
-	// 6) If we see an HTTP 403 status in the job’s response, treat it as a potential block
+	// 6) If the job's response is a 403, it might be a block
 	if resp.StatusCode == http.StatusForbidden {
 		log.Println("Access forbidden, possible block or captcha. (no MarkBad call)")
 		return scrapemate.Response{Error: errors.New("access forbidden")}
 	}
 
-	// 7) If the job hasn't filled Body, let's add final content
+	// 7) Final response adjustments
 	if len(resp.Body) == 0 {
 		resp.Body = []byte(content)
 	}
 	if resp.StatusCode == 0 {
 		resp.StatusCode = http.StatusOK
 	}
-
 	return resp
 }
 
-// browser is a wrapper around one Playwright Browser + BrowserContext
+// browser wraps a single Browser + BrowserContext
 type browser struct {
 	browser      playwright.Browser
 	ctx          playwright.BrowserContext
@@ -250,13 +261,13 @@ type browser struct {
 	currentProxy *scrapemate.Proxy
 }
 
-// Close closes both the context and the underlying browser
+// Close closes both the context and the underlying browser.
 func (o *browser) Close() {
 	_ = o.ctx.Close()
 	_ = o.browser.Close()
 }
 
-// newBrowser creates a brand-new Browser with the proxy at launch time
+// newBrowser creates a new Browser+Context pair with optional proxy usage.
 func newBrowser(
 	pw *playwright.Playwright,
 	headless bool,
@@ -270,7 +281,7 @@ func newBrowser(
 
 	// If a rotator is present, pick the next proxy
 	if rotator != nil {
-		next := rotator.Next() // returns scrapemate.Proxy
+		next := rotator.Next()
 		currentProxy = &next
 		proxy = &playwright.Proxy{
 			Server:   next.URL,
@@ -328,7 +339,7 @@ func newBrowser(
 	}, nil
 }
 
-// detectCaptcha scans page content for common CAPTCHA triggers
+// detectCaptcha scans page content for common CAPTCHA triggers.
 func detectCaptcha(content string) bool {
 	captchaIndicators := []string{"captcha", "i'm not a robot", "verify you're human"}
 	lc := strings.ToLower(content)
@@ -340,16 +351,17 @@ func detectCaptcha(content string) bool {
 	return false
 }
 
-// JSHTTPFetcher simulates or actually uses a JS-capable engine (like Playwright, Rod, etc.)
+// JSHTTPFetcher is a stub that simulates a JS-based environment (Rod, etc).
+// Not typically used in your final code but left for completeness.
 type JSHTTPFetcher struct {
 	mu          sync.Mutex
 	headless    bool
 	initialized bool
-	browser     interface{}            // represent your actual browser/driver
-	settings    map[string]interface{} // any custom settings
+	browser     interface{}
+	settings    map[string]interface{}
 }
 
-// NewJSHTTPFetcher creates a new JSHTTPFetcher with optional settings.
+// NewJSHTTPFetcher creates a new stub JSHTTPFetcher.
 func NewJSHTTPFetcher(headless bool) *JSHTTPFetcher {
 	return &JSHTTPFetcher{
 		headless: headless,
@@ -357,7 +369,7 @@ func NewJSHTTPFetcher(headless bool) *JSHTTPFetcher {
 	}
 }
 
-// Fetch attempts to fetch using a JavaScript-capable environment (stub).
+// Fetch is a stub fetch example.
 func (j *JSHTTPFetcher) Fetch(ctx context.Context, job scrapemate.IJob) scrapemate.Response {
 	j.mu.Lock()
 	if !j.initialized {
@@ -382,7 +394,8 @@ func (j *JSHTTPFetcher) initBrowser() error {
 	if j.browser != nil {
 		return nil
 	}
-	j.browser = struct{}{} // pretend to launch a headless engine
+	// Pretend to launch a headless engine here
+	j.browser = struct{}{}
 	return nil
 }
 
