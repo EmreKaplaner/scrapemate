@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/EmreKaplaner/scrapemate"
 	"github.com/EmreKaplaner/scrapemate/adapters/cache"
@@ -17,6 +18,7 @@ var _ scrapemate.Cacher = (*FileCache)(nil)
 // FileCache is a file cache
 type FileCache struct {
 	folder string
+	mutex  sync.RWMutex // Add mutex for concurrent operations
 }
 
 // NewFileCache creates a new file cache
@@ -31,6 +33,9 @@ func NewFileCache(folder string) (*FileCache, error) {
 
 // Get gets a value from the cache
 func (c *FileCache) Get(_ context.Context, key string) (scrapemate.Response, error) {
+	c.mutex.RLock() // Use read lock for concurrent reads
+	defer c.mutex.RUnlock()
+
 	file := filepath.Join(c.folder, key)
 
 	f, err := os.Open(file)
@@ -61,9 +66,16 @@ func (c *FileCache) Get(_ context.Context, key string) (scrapemate.Response, err
 
 // Set sets a value to the cache
 func (c *FileCache) Set(_ context.Context, key string, value *scrapemate.Response) error {
-	f, err := os.Create(filepath.Join(c.folder, key))
+	c.mutex.Lock() // Use write lock for exclusive write access
+	defer c.mutex.Unlock()
+
+	// Create a temp file first to avoid corruption during write
+	tempFile := filepath.Join(c.folder, fmt.Sprintf("%s.tmp", key))
+	targetFile := filepath.Join(c.folder, key)
+
+	f, err := os.Create(tempFile)
 	if err != nil {
-		return fmt.Errorf("cannot create file %w", err)
+		return fmt.Errorf("cannot create temp file: %w", err)
 	}
 
 	defer f.Close()
@@ -80,6 +92,21 @@ func (c *FileCache) Set(_ context.Context, key string, value *scrapemate.Respons
 
 	if _, err := f.Write(compressed); err != nil {
 		return fmt.Errorf("cannot write to file %w", err)
+	}
+
+	// Make sure the data is on disk
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("cannot sync file to disk: %w", err)
+	}
+
+	// Close before rename
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("cannot close file: %w", err)
+	}
+
+	// Atomic rename to ensure consistency
+	if err := os.Rename(tempFile, targetFile); err != nil {
+		return fmt.Errorf("cannot finalize cache file: %w", err)
 	}
 
 	return nil

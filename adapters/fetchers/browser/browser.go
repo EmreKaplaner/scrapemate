@@ -49,6 +49,9 @@ func New(options BrowserOptions) (scrapemate.HTTPFetcher, error) {
 }
 
 func (b *BrowserFetcher) Fetch(ctx context.Context, job scrapemate.IJob) scrapemate.Response {
+	// Periodically check the pool
+	b.browserPool.CheckBrowserHealth()
+
 	browser, err := b.browserPool.Get(ctx)
 	if err != nil {
 		return scrapemate.Response{

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/cookiejar"
+	"os"
+	"sync"
 	"time"
 
 	"github.com/EmreKaplaner/scrapemate"
@@ -20,6 +22,22 @@ import (
 	"github.com/EmreKaplaner/scrapemate/adapters/proxy"
 )
 
+// RetryConfig holds configuration for retry operations
+type RetryConfig struct {
+	MaxAttempts     int
+	InitialInterval time.Duration
+	MaxInterval     time.Duration
+	Multiplier      float64
+}
+
+// DefaultRetryConfig provides reasonable defaults for retries
+var DefaultRetryConfig = RetryConfig{
+	MaxAttempts:     3,
+	InitialInterval: 100 * time.Millisecond,
+	MaxInterval:     2 * time.Second,
+	Multiplier:      2.0,
+}
+
 type ScrapemateApp struct {
 	cfg *Config
 
@@ -28,15 +46,44 @@ type ScrapemateApp struct {
 
 	provider scrapemate.JobProvider
 	cacher   scrapemate.Cacher
+	fetcher  scrapemate.HTTPFetcher
+
+	externalFetcher bool
+	fetcherMutex    sync.Mutex
+	retryConfig     RetryConfig
+
+	// Health monitoring
+	healthMutex sync.RWMutex
+	healthy     bool
+	lastError   error
 }
 
-// NewScrapemateApp creates a new ScrapemateApp.
-func NewScrapeMateApp(cfg *Config) (*ScrapemateApp, error) {
+// NewScrapeMateApp creates a new ScrapemateApp, optionally accepting an external fetcher.
+func NewScrapeMateApp(cfg *Config, externalFetcher scrapemate.HTTPFetcher) (*ScrapemateApp, error) {
 	app := ScrapemateApp{
-		cfg: cfg,
+		cfg:             cfg,
+		fetcher:         externalFetcher,
+		externalFetcher: externalFetcher != nil,
+		retryConfig:     DefaultRetryConfig,
+		healthy:         true,
 	}
 
 	return &app, nil
+}
+
+// IsHealthy returns the current health status of the app
+func (app *ScrapemateApp) IsHealthy() (bool, error) {
+	app.healthMutex.RLock()
+	defer app.healthMutex.RUnlock()
+	return app.healthy, app.lastError
+}
+
+// setHealth updates the health status of the app
+func (app *ScrapemateApp) setHealth(healthy bool, err error) {
+	app.healthMutex.Lock()
+	defer app.healthMutex.Unlock()
+	app.healthy = healthy
+	app.lastError = err
 }
 
 // Start starts the app.
@@ -45,20 +92,27 @@ func (app *ScrapemateApp) Start(ctx context.Context, seedJobs ...scrapemate.IJob
 	ctx, cancel := context.WithCancelCause(ctx)
 
 	defer cancel(errors.New("closing app"))
+	app.cancel = cancel
 
 	mate, err := app.getMate(ctx)
 	if err != nil {
+		app.setHealth(false, err)
 		return err
 	}
 
+	app.setHealth(true, nil)
 	defer app.Close()
-	defer mate.Close()
+
+	if !app.externalFetcher {
+		defer mate.Close()
+	}
 
 	for i := range app.cfg.Writers {
 		writer := app.cfg.Writers[i]
 
 		g.Go(func() error {
 			if err := writer.Run(ctx, mate.Results()); err != nil {
+				app.setHealth(false, err)
 				cancel(err)
 				return err
 			}
@@ -74,11 +128,36 @@ func (app *ScrapemateApp) Start(ctx context.Context, seedJobs ...scrapemate.IJob
 	g.Go(func() error {
 		for i := range seedJobs {
 			if err := app.provider.Push(ctx, seedJobs[i]); err != nil {
+				app.setHealth(false, err)
 				return err
 			}
 		}
 
 		return nil
+	})
+
+	// Add health check monitoring goroutine
+	g.Go(func() error {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-ticker.C:
+				// Perform health check - check if cacher is accessible
+				if app.cacher != nil {
+					// Simple health check by trying to access a known key
+					_, err := app.cacher.Get(ctx, "health_check")
+					if err != nil && !errors.Is(err, os.ErrNotExist) {
+						app.setHealth(false, err)
+					} else {
+						app.setHealth(true, nil)
+					}
+				}
+			}
+		}
 	})
 
 	return g.Wait()
@@ -90,31 +169,84 @@ func (app *ScrapemateApp) Close() error {
 		app.cacher.Close()
 	}
 
+	if app.fetcher != nil && !app.externalFetcher {
+		return app.fetcher.Close()
+	}
+
 	return nil
+}
+
+// withRetry attempts an operation with retries based on the retry config
+func (app *ScrapemateApp) withRetry(operation func() error) error {
+	var err error
+	backoff := app.retryConfig.InitialInterval
+
+	for attempt := 0; attempt < app.retryConfig.MaxAttempts; attempt++ {
+		err = operation()
+		if err == nil {
+			return nil
+		}
+
+		if attempt == app.retryConfig.MaxAttempts-1 {
+			break
+		}
+
+		time.Sleep(backoff)
+		backoff = time.Duration(float64(backoff) * app.retryConfig.Multiplier)
+		if backoff > app.retryConfig.MaxInterval {
+			backoff = app.retryConfig.MaxInterval
+		}
+	}
+
+	return err
 }
 
 func (app *ScrapemateApp) getMate(ctx context.Context) (*scrapemate.ScrapeMate, error) {
 	var err error
 
-	app.provider, err = app.getProvider()
+	// Initialize provider with retry
+	err = app.withRetry(func() error {
+		var providerErr error
+		app.provider, providerErr = app.getProvider()
+		return providerErr
+	})
+
 	if err != nil {
 		return nil, err
 	}
 
-	fetcherInstance, err := app.getFetcher()
-	if err != nil {
-		return nil, err
-	}
+	// Initialize fetcher with retry and lock
+	app.fetcherMutex.Lock()
+	if app.fetcher == nil {
+		err = app.withRetry(func() error {
+			var fetcherErr error
+			app.fetcher, fetcherErr = app.getFetcher()
+			return fetcherErr
+		})
 
-	app.cacher, err = app.getCacher()
+		if err != nil {
+			app.fetcherMutex.Unlock()
+			return nil, err
+		}
+	}
+	app.fetcherMutex.Unlock()
+
+	// Initialize cacher with retry
+	err = app.withRetry(func() error {
+		var cacherErr error
+		app.cacher, cacherErr = app.getCacher()
+		return cacherErr
+	})
+
 	if err != nil {
-		return nil, err
+		// Continue without cache if it fails - fallback strategy
+		app.cacher = nil
 	}
 
 	params := []func(*scrapemate.ScrapeMate) error{
 		scrapemate.WithContext(ctx, app.cancel),
 		scrapemate.WithJobProvider(app.provider),
-		scrapemate.WithHTTPFetcher(fetcherInstance),
+		scrapemate.WithHTTPFetcher(app.fetcher),
 		scrapemate.WithHTMLParser(parser.New()),
 		scrapemate.WithConcurrency(app.cfg.Concurrency),
 		scrapemate.WithExitBecauseOfInactivity(app.cfg.ExitOnInactivityDuration),
